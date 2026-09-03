@@ -168,10 +168,10 @@ class WowsConfig:
 
     # --- live screen share ---
     # On by default, unlike the switch above, and deliberately independent of
-    # it: this one captures nothing and writes nothing. It only reuses frames
-    # the user is already streaming to the character, so turning screen sharing
-    # on IS the consent. The switch exists for someone who wants the catgirl
-    # kept out of the shared screen anyway.
+    # it: this one captures nothing and writes nothing. It only reads recent
+    # screen frames that the model provider has already received for the target
+    # character. The switch exists for someone who wants the plugin kept out of
+    # that shared view anyway.
     live_vision_enabled: bool = True
 
     # --- tactical documents ---

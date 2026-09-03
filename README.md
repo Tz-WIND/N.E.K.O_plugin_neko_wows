@@ -1,9 +1,13 @@
 # N.E.K.O World of Warships Companion
 
 `neko_wows` is a read-only World of Warships companion plugin for N.E.K.O. It
-consumes local `8111_for_wows` telemetry, turns frames into battle events, and
-lets the active character deliver prioritized call-outs. It does not automate
-game input or read game memory.
+consumes local `8111_for_wows` telemetry, turns snapshots into battle events,
+and lets the active character deliver prioritized call-outs. By default,
+`live_vision_enabled` also reads recent shared-screen frames from the host's
+global `bus.frames` stream, which is shared across plugins rather than isolated
+per plugin. This reuse path does not capture or store frames itself and can be
+disabled in the plugin settings. The plugin does not automate game input or
+read game memory.
 
 ## Repository layout
 

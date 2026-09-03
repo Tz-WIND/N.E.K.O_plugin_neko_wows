@@ -273,10 +273,6 @@ export function DiagnosticsSection(props: {
             <Text>{t("diagnostics.liveVision.disabledHelp")}</Text>
           ) : liveVision.in_use ? (
             <Alert tone="success">{t("diagnostics.liveVision.inUse")}</Alert>
-          ) : liveVision.active && liveVision.source === "camera" ? (
-            <Text>{t("diagnostics.liveVision.cameraOnly")}</Text>
-          ) : liveVision.active && !liveVision.native_vision ? (
-            <Alert tone="warning">{t("diagnostics.liveVision.noNativeVision")}</Alert>
           ) : (
             <Text>{t("diagnostics.liveVision.notSharing")}</Text>
           )}

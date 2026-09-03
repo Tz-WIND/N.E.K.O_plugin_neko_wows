@@ -6,8 +6,6 @@ import asyncio
 import threading
 
 import pytest
-from plugin.sdk.plugin import Err, Ok, SdkError
-
 from neko_wows import (
     STORE_CONNECTION_SETTINGS,
     STORE_LIVE_VISION_ENABLED,
@@ -47,6 +45,7 @@ from neko_wows.policy.tactic_policy import (
     AdviceCandidate,
     WowsTacticPolicy,
 )
+from plugin.sdk.plugin import Err, Ok, SdkError
 
 
 def facts(at=100.0):
@@ -1040,54 +1039,37 @@ def test_disabling_screenshots_clears_frames_and_persists_off():
     assert target.store.calls[0][1]["enabled"] is False
 
 
-def test_enabling_live_frame_reuse_authorizes_the_current_generation():
+def test_live_frame_reuse_switch_is_local_and_persisted():
     async def scenario():
         target = _action_target(guarded=False)
         target.cfg.live_vision_enabled = False
-        target._live_frame_permission_token = "generation-one"
-        calls: list[dict[str, object]] = []
 
-        async def set_live_frame_permission_async(**kwargs):
-            calls.append(kwargs)
-            return {
-                "ok": True,
-                "source_name": "neko_wows",
-                "token": kwargs["token"],
-                "enabled": kwargs["enabled"],
-            }
+        async def retired_rpc(**_kwargs):
+            raise AssertionError("retired permission RPC was called")
 
         target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
+            "set_live_frame_permission_async": staticmethod(retired_rpc),
+            "set_plugin_delivery_permission_async": staticmethod(retired_rpc),
         })()
 
         result = await target.set_live_vision_enabled(True)
 
         assert result.is_ok()
+        assert result.unwrap() == {"live_vision_enabled": True}
         assert target.cfg.live_vision_enabled is True
-        assert calls == [{
-            "token": "generation-one",
-            "enabled": True,
-            "timeout": 3.0,
-        }]
         assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, True)]
 
     asyncio.run(scenario())
 
 
-def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
+def test_startup_reload_does_not_publish_retired_frame_permission():
     async def scenario():
         target = _ReloadTarget(current=True, configured=False)
-        target._live_frame_permission_token = "generation-one"
         calls: list[dict[str, object]] = []
 
         async def set_live_frame_permission_async(**kwargs):
             calls.append(kwargs)
-            return {
-                "ok": True,
-                "token": kwargs["token"],
-                "enabled": kwargs["enabled"],
-            }
+            raise AssertionError("retired frame permission RPC was called")
 
         target._host_ctx = type("Host", (), {
             "set_live_frame_permission_async": staticmethod(
@@ -1096,39 +1078,18 @@ def test_startup_reload_authorizes_live_frame_reuse_when_enabled():
 
         await NekoWowsPlugin._reload_config(target, force_dry_run=True)
 
-        assert calls == [{
-            "token": "generation-one",
-            "enabled": True,
-            "timeout": 3.0,
-        }]
+        assert calls == []
 
     asyncio.run(scenario())
 
 
-def test_startup_reload_retries_failed_delivery_permission_publication(
-    monkeypatch,
-):
-    import neko_wows as wows_module
-
-    real_sleep = asyncio.sleep
-
-    async def yield_once(_delay):
-        await real_sleep(0)
-
-    monkeypatch.setattr(wows_module.asyncio, "sleep", yield_once)
+def test_startup_reload_does_not_publish_retired_delivery_permission():
     target = _ReloadTarget(current=True, configured=False)
-    target._plugin_delivery_token = "generation-one"
     calls: list[dict[str, object]] = []
 
     async def set_plugin_delivery_permission_async(**kwargs):
         calls.append(kwargs)
-        if len(calls) == 1:
-            raise RuntimeError("host unavailable")
-        return {
-            "ok": True,
-            "token": kwargs["token"],
-            "enabled": kwargs["enabled"],
-        }
+        raise AssertionError("retired delivery permission RPC was called")
 
     target._host_ctx = type("Host", (), {
         "set_plugin_delivery_permission_async": staticmethod(
@@ -1137,206 +1098,41 @@ def test_startup_reload_retries_failed_delivery_permission_publication(
 
     asyncio.run(NekoWowsPlugin._reload_config(
         target, force_dry_run=True))
-    assert len(calls) == 1
-
-    async def command_loop():
-        await NekoWowsPlugin._on_command_loop_start(target)
-        for _ in range(10):
-            if len(calls) >= 2:
-                break
-            await real_sleep(0)
-
-        assert calls == [
-            {
-                "token": "generation-one",
-                "enabled": True,
-                "timeout": 3.0,
-            },
-            {
-                "token": "generation-one",
-                "enabled": True,
-                "timeout": 3.0,
-            },
-        ]
-
-    asyncio.run(command_loop())
+    assert calls == []
 
 
-def test_failed_live_frame_registration_clears_runtime_readiness():
+def test_live_frame_switch_persistence_failure_keeps_runtime_unchanged():
     async def scenario():
-        target = _ReloadTarget(current=True, configured=False)
-        target._live_frame_permission_token = "generation-one"
-        target._live_frame_permission_ready = False
-        fail = False
-
-        async def set_live_frame_permission_async(**kwargs):
-            if fail:
-                raise RuntimeError("host unavailable")
-            return {"ok": True, **kwargs}
-
-        target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
-        })()
-
-        await NekoWowsPlugin._publish_live_frame_permission(
-            target, enabled=True)
-        assert target._live_frame_permission_ready is True
-
-        fail = True
-        with pytest.raises(RuntimeError, match="host unavailable"):
-            await NekoWowsPlugin._publish_live_frame_permission(
-                target,
-                enabled=True,
-            )
-
-        assert target._live_frame_permission_ready is False
-
-    asyncio.run(scenario())
-
-
-def test_disabling_live_frame_reuse_waits_for_host_revocation_ack():
-    async def scenario():
-        target = _action_target(guarded=False)
-        target.cfg.live_vision_enabled = True
-        target._live_frame_permission_token = "generation-one"
-        entered = asyncio.Event()
-        release = asyncio.Event()
-        calls: list[dict[str, object]] = []
-
-        async def set_live_frame_permission_async(**kwargs):
-            calls.append(kwargs)
-            entered.set()
-            await release.wait()
-            return {
-                "ok": True,
-                "source_name": "neko_wows",
-                "token": kwargs["token"],
-                "enabled": kwargs["enabled"],
-            }
-
-        target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
-        })()
-
-        action = asyncio.create_task(target.set_live_vision_enabled(False))
-        await asyncio.sleep(0)
-
-        assert entered.is_set()
-        assert action.done() is False
-        assert target.cfg.live_vision_enabled is False
-        assert target._live_frame_permission_token == "generation-one"
-
-        release.set()
-        result = await action
-
-        assert result.is_ok()
-        assert calls == [{
-            "token": "generation-one",
-            "enabled": False,
-            "timeout": 3.0,
-        }]
-        assert target._live_frame_permission_token != "generation-one"
-        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, False)]
-
-    asyncio.run(scenario())
-
-
-def test_enabling_live_frame_reuse_reports_host_failure():
-    async def scenario():
-        target = _action_target(guarded=False)
+        store = _ActionStore(Err(SdkError("disk")))
+        target = _action_target(guarded=False, store=store)
         target.cfg.live_vision_enabled = False
-        target._live_frame_permission_token = "generation-one"
-
-        async def set_live_frame_permission_async(**_kwargs):
-            raise RuntimeError("live frame permission update unavailable")
-
-        target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
-        })()
 
         result = await target.set_live_vision_enabled(True)
 
         assert result.is_err()
-        assert "unavailable" in str(result.error)
         assert target.cfg.live_vision_enabled is False
-        assert target._live_frame_permission_token == "generation-one"
-        assert target.store.calls == [
-            (STORE_LIVE_VISION_ENABLED, True),
-            (STORE_LIVE_VISION_ENABLED, False),
-        ]
+        assert store.calls == [(STORE_LIVE_VISION_ENABLED, True)]
 
     asyncio.run(scenario())
 
 
-def test_live_frame_host_failure_reports_persistence_rollback_failure():
-    async def scenario():
-        class _RollbackFailingStore:
-            def __init__(self):
-                self.calls = []
-
-            async def set(self, key, value):
-                self.calls.append((key, value))
-                if len(self.calls) == 1:
-                    return Ok(None)
-                return Err(SdkError("rollback disk failure"))
-
-        warnings = []
-        target = _action_target(
-            guarded=False,
-            store=_RollbackFailingStore(),
-        )
-        target.cfg.live_vision_enabled = False
-        target._live_frame_permission_token = "generation-one"
-        target.logger = type("Logger", (), {
-            "warning": lambda _self, message: warnings.append(message),
-        })()
-
-        async def set_live_frame_permission_async(**_kwargs):
-            raise RuntimeError("host unavailable")
-
-        target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
-        })()
-
-        result = await target.set_live_vision_enabled(True)
-
-        assert result.is_err()
-        assert "preference rollback failed" in str(result.error)
-        assert any("preference rollback failed" in item for item in warnings)
-        assert target.cfg.live_vision_enabled is False
-        assert target._live_frame_permission_token == "generation-one"
-
-    asyncio.run(scenario())
-
-
-def test_disabling_live_frame_reuse_reports_host_failure():
+def test_disabling_live_frame_reuse_needs_no_host_acknowledgement():
     async def scenario():
         target = _action_target(guarded=False)
         target.cfg.live_vision_enabled = True
-        target._live_frame_permission_token = "generation-one"
 
-        async def set_live_frame_permission_async(**_kwargs):
-            raise RuntimeError("live frame permission update rejected")
+        async def retired_rpc(**_kwargs):
+            raise AssertionError("retired permission RPC was called")
 
         target._host_ctx = type("Host", (), {
-            "set_live_frame_permission_async": staticmethod(
-                set_live_frame_permission_async),
+            "set_live_frame_permission_async": staticmethod(retired_rpc),
         })()
 
         result = await target.set_live_vision_enabled(False)
 
-        assert result.is_err()
-        assert "rejected" in str(result.error)
-        assert target.cfg.live_vision_enabled is True
-        assert target._live_frame_permission_token == "generation-one"
-        assert target.store.calls == [
-            (STORE_LIVE_VISION_ENABLED, False),
-            (STORE_LIVE_VISION_ENABLED, True),
-        ]
+        assert result.is_ok()
+        assert target.cfg.live_vision_enabled is False
+        assert target.store.calls == [(STORE_LIVE_VISION_ENABLED, False)]
 
     asyncio.run(scenario())
 

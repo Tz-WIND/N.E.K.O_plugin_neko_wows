@@ -471,9 +471,8 @@ def test_shutdown_stops_workers_outside_pipeline_lock_and_cleans_up_inside_it():
     ]
 
 
-def _disable_runtime_plugin(*, delivery_raises=False, live_frame_raises=False):
-    delivery_calls = []
-    live_frame_calls = []
+def _runtime_output_plugin():
+    permission_calls = []
     plugin = object.__new__(NekoWowsPlugin)
     plugin._state_lock = threading.RLock()
     plugin._pipeline_lock = threading.Lock()
@@ -481,30 +480,19 @@ def _disable_runtime_plugin(*, delivery_raises=False, live_frame_raises=False):
     plugin._reconnect_required = False
     plugin._latest = ("live-frame",)
     plugin._previous = ("previous-frame",)
-    plugin._plugin_delivery_token = "queued-generation"
-    plugin._live_frame_permission_token = "frame-generation"
-    plugin._live_frame_permission_ready = True
     plugin.cfg = WowsConfig()
 
-    async def set_plugin_delivery_permission_async(**kwargs):
-        delivery_calls.append(kwargs)
-        if delivery_raises:
-            raise RuntimeError("plugin delivery permission update unavailable")
-        return {"ok": True, **kwargs}
-
-    async def set_live_frame_permission_async(**kwargs):
-        live_frame_calls.append(kwargs)
-        if live_frame_raises:
-            raise RuntimeError("live frame permission update unavailable")
-        return {"ok": True, **kwargs}
+    async def retired_rpc(**kwargs):
+        permission_calls.append(kwargs)
+        raise AssertionError("retired permission RPC was called")
 
     plugin._host_ctx = SimpleNamespace(
-        set_plugin_delivery_permission_async=(
-            set_plugin_delivery_permission_async),
-        set_live_frame_permission_async=set_live_frame_permission_async,
+        set_plugin_delivery_permission_async=retired_rpc,
+        set_live_frame_permission_async=retired_rpc,
     )
     plugin.transport = SimpleNamespace(stop=lambda: None)
-    plugin.service = SimpleNamespace(stop=lambda: None)
+    status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
+    plugin.service = SimpleNamespace(stop=lambda: status)
     plugin.dispatcher = SimpleNamespace(pause=lambda _reason: None)
     plugin.arbiter = SimpleNamespace(pause=lambda: None)
     plugin.context_injector = SimpleNamespace(restore=lambda *_a, **_k: None)
@@ -516,143 +504,32 @@ def _disable_runtime_plugin(*, delivery_raises=False, live_frame_raises=False):
     )
     plugin.shots = SimpleNamespace(clear=lambda: None)
     plugin.knowledge = SimpleNamespace(close=lambda: None)
-    return plugin, delivery_calls, live_frame_calls
+    return plugin, permission_calls
 
 
-def test_disabling_the_plugin_invalidates_queued_host_deliveries():
-    """A cue the host already accepted must not outlive `[neko_wows].enabled`.
-
-    Stopping transport and pausing the local dispatcher leaves the proactive
-    manager holding the callback for the rest of its TTL. Disable must tell the
-    host that the already-stamped generation is off *before* minting a new
-    one, so a still-queued battle message cannot be spoken after the UI says
-    disabled.
-    """
+def test_disabling_stops_new_output_without_revoking_host_deliveries():
+    """Accepted host work expires through its existing TTL/coalesce contract."""
     async def scenario():
-        plugin, delivery_calls, _live_frame_calls = _disable_runtime_plugin()
+        plugin, permission_calls = _runtime_output_plugin()
 
         await NekoWowsPlugin._stop_runtime_output(plugin)
 
-        assert delivery_calls == [{
-            "token": "queued-generation",
-            "enabled": False,
-            "timeout": 3.0,
-        }]
-        assert plugin._plugin_delivery_token != "queued-generation"
-        assert plugin._plugin_delivery_token
-
-    asyncio.run(scenario())
-
-
-def test_disabling_does_not_claim_success_when_host_delivery_revoke_fails():
-    """A failed host update must not look like disable succeeded.
-
-    Local output still has to stop so new call-outs are not stamped with the
-    still-enabled generation. The caller must see the failure so the panel
-    does not report disabled while queued cues can still speak.
-    """
-    async def scenario():
-        plugin, delivery_calls, _live_frame_calls = _disable_runtime_plugin(
-            delivery_raises=True)
-
-        with pytest.raises(RuntimeError, match="unavailable"):
-            await NekoWowsPlugin._stop_runtime_output(plugin)
-
-        assert delivery_calls == [{
-            "token": "queued-generation",
-            "enabled": False,
-            "timeout": 3.0,
-        }]
+        assert permission_calls == []
         assert plugin._running is False
-        assert plugin._plugin_delivery_token != "queued-generation"
+        assert plugin._latest is None
+        assert plugin._previous is None
 
     asyncio.run(scenario())
 
 
-def test_disabling_cancels_delivery_permission_publication_retry():
+def test_shutdown_does_not_call_retired_permission_rpcs():
     async def scenario():
-        plugin, _delivery_calls, _live_frame_calls = _disable_runtime_plugin()
-        retry_started = asyncio.Event()
-        retry_cancelled = asyncio.Event()
-
-        async def pending_retry():
-            retry_started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                retry_cancelled.set()
-
-        retry_task = asyncio.create_task(pending_retry())
-        plugin._plugin_delivery_permission_retry_task = retry_task
-        await retry_started.wait()
-        try:
-            await NekoWowsPlugin._stop_runtime_output(plugin)
-            assert retry_task.cancelled()
-            assert retry_cancelled.is_set()
-        finally:
-            retry_task.cancel()
-            await asyncio.gather(retry_task, return_exceptions=True)
-
-    asyncio.run(scenario())
-
-
-def test_shutdown_revokes_the_live_frame_permission_generation():
-    async def scenario():
-        calls = []
-        plugin = object.__new__(NekoWowsPlugin)
-        plugin._state_lock = threading.RLock()
-        plugin._pipeline_lock = threading.RLock()
-        plugin._running = True
-        plugin._live_frame_permission_token = "active-generation"
-        plugin._live_frame_permission_ready = True
-        plugin.cfg = WowsConfig()
-
-        async def set_live_frame_permission_async(**kwargs):
-            calls.append(kwargs)
-            return {"ok": True, **kwargs}
-
-        plugin._host_ctx = SimpleNamespace(
-            set_live_frame_permission_async=set_live_frame_permission_async)
-        plugin.transport = SimpleNamespace(stop=lambda: None)
-        status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
-        plugin.service = SimpleNamespace(stop=lambda: status)
-        plugin.context_injector = SimpleNamespace(restore=lambda *_a, **_k: None)
-        plugin.ship_context = SimpleNamespace(reset=lambda _reason: None)
-        plugin.shots = SimpleNamespace(clear=lambda: None)
-        plugin.knowledge = SimpleNamespace(close=lambda: None)
-        plugin.logger = SimpleNamespace(
-            info=lambda _message: None,
-            warning=lambda _message: None,
-        )
+        plugin, permission_calls = _runtime_output_plugin()
 
         result = await NekoWowsPlugin.shutdown(plugin)
 
         assert result.is_ok()
-        assert calls == [{
-            "token": "active-generation",
-            "enabled": False,
-            "timeout": 3.0,
-        }]
-        assert plugin._live_frame_permission_token != "active-generation"
-        assert plugin._live_frame_permission_ready is False
-
-    asyncio.run(scenario())
-
-
-def test_shutdown_reports_delivery_permission_failure():
-    async def scenario():
-        plugin, _delivery_calls, _live_frame_calls = _disable_runtime_plugin(
-            delivery_raises=True)
-        plugin._live_frame_permission_token = "active-generation"
-        status = SimpleNamespace(as_dict=lambda: {"mode": "stopped"})
-        plugin.service = SimpleNamespace(stop=lambda: status)
-
-        result = await NekoWowsPlugin.shutdown(plugin)
-
-        assert result.is_err()
-        message = str(result.error)
-        assert "delivery" in message.lower()
-        assert "live frame" not in message.lower()
+        assert permission_calls == []
 
     asyncio.run(scenario())
 
@@ -879,7 +756,6 @@ def test_callout_profile_uses_one_target_for_probe_and_delivery(monkeypatch):
     import neko_wows as wows_module
 
     plugin, snapshot, _calls = _catalog_order_target()
-    plugin._live_frame_permission_ready = True
     probed_roles = []
     plugin.live_vision = SimpleNamespace(
         is_active=lambda *, role: probed_roles.append(role) or True)
@@ -903,47 +779,13 @@ def test_callout_profile_uses_one_target_for_probe_and_delivery(monkeypatch):
     assert captured["target_lanlan"] == "alpha"
 
 
-def test_callout_profile_stamps_the_live_frame_permission_generation():
-    plugin, snapshot, _calls = _catalog_order_target()
-    plugin._live_frame_permission_token = "generation-one"
-    captured = {}
-
-    def build(_candidates, profile, _excerpts=()):
-        captured["token"] = profile.live_frame_permission_token
-        return SimpleNamespace(text="respond", event_id="battle_started")
-
-    plugin.router = SimpleNamespace(build=build)
-
-    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
-
-    assert captured["token"] == "generation-one"
-
-
-def test_callout_profile_stamps_the_plugin_delivery_generation():
-    plugin, snapshot, _calls = _catalog_order_target()
-    plugin._plugin_delivery_token = "queued-generation"
-    captured = {}
-
-    def build(_candidates, profile, _excerpts=()):
-        captured["token"] = profile.plugin_delivery_token
-        return SimpleNamespace(text="respond", event_id="battle_started")
-
-    plugin.router = SimpleNamespace(build=build)
-
-    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
-
-    assert captured["token"] == "queued-generation"
-
-
-def test_callout_profile_disables_live_vision_until_permission_is_ready():
+def test_callout_profile_marks_a_fresh_bus_frame_active():
     plugin, snapshot, _calls = _catalog_order_target()
     plugin.cfg.live_vision_enabled = True
-    plugin._live_frame_permission_ready = False
     plugin.live_vision = SimpleNamespace(is_active=lambda **_kwargs: True)
     captured = {}
 
     def build(_candidates, profile, _excerpts=()):
-        captured["enabled"] = profile.live_vision_enabled
         captured["active"] = profile.live_vision_active
         captured["scene_context"] = profile.scene_context
         return SimpleNamespace(text="respond", event_id="battle_started")
@@ -952,23 +794,39 @@ def test_callout_profile_disables_live_vision_until_permission_is_ready():
 
     NekoWowsPlugin._evaluate_locked(plugin, snapshot)
 
-    assert captured["enabled"] is False
+    assert captured["active"] is True
+    assert captured["scene_context"] == WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
+
+
+def test_callout_profile_ignores_the_bus_when_reuse_is_disabled():
+    plugin, snapshot, _calls = _catalog_order_target()
+    plugin.cfg.live_vision_enabled = False
+    plugin.live_vision = SimpleNamespace(
+        is_active=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled probe was called")))
+    captured = {}
+
+    def build(_candidates, profile, _excerpts=()):
+        captured["active"] = profile.live_vision_active
+        captured["scene_context"] = profile.scene_context
+        return SimpleNamespace(text="respond", event_id="battle_started")
+
+    plugin.router = SimpleNamespace(build=build)
+
+    NekoWowsPlugin._evaluate_locked(plugin, snapshot)
+
     assert captured["active"] is False
     assert captured["scene_context"] == WOWS_CONTEXT_INSTRUCTIONS
 
 
-def test_callout_scene_follows_the_attachment_request_when_the_probe_is_cold():
-    """Both switches on, probe empty: the cue still asks the host to attach,
-    so it must not also mandate wows_look_at_battle."""
+def test_callout_scene_uses_screenshot_fallback_when_the_bus_is_cold():
     plugin, snapshot, _calls = _catalog_order_target()
     plugin.cfg.screenshot_enabled = True
     plugin.cfg.live_vision_enabled = True
-    plugin._live_frame_permission_ready = True
     plugin.live_vision = SimpleNamespace(is_active=lambda **_kwargs: False)
     captured = {}
 
     def build(_candidates, profile, _excerpts=()):
-        captured["enabled"] = profile.live_vision_enabled
         captured["active"] = profile.live_vision_active
         captured["screenshot"] = profile.screenshot_enabled
         captured["scene_context"] = profile.scene_context
@@ -978,11 +836,10 @@ def test_callout_scene_follows_the_attachment_request_when_the_probe_is_cold():
 
     NekoWowsPlugin._evaluate_locked(plugin, snapshot)
 
-    assert captured["enabled"] is True
     assert captured["active"] is False
     assert captured["screenshot"] is True
-    assert captured["scene_context"] == WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS
-    assert "wows_look_at_battle" not in captured["scene_context"]
+    assert captured["scene_context"] == WOWS_CONTEXT_WITH_VISION_INSTRUCTIONS
+    assert "wows_look_at_battle" in captured["scene_context"]
 
 
 def test_callout_profile_carries_scene_context_into_the_proactive_response():

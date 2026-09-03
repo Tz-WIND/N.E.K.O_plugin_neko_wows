@@ -71,21 +71,9 @@ class PromptProfile:
     # When true, each call-out nudges the model to look before speaking. Kept
     # off the editable prompt revision so the privacy switch stays authoritative.
     screenshot_enabled: bool = False
-    # Ask the host to attach the shared screen to this turn. Follows the panel
-    # switch alone, deliberately: whether a frame actually exists is a fact the
-    # host establishes when it delivers, and asking is free when it does not.
-    live_vision_enabled: bool = False
-    # What the probe believed when the call-out was built. Combined with the
-    # attachment request when screenshots are also on, so a cold probe cannot
-    # mandate wows_look_at_battle on a turn the host may already be attaching.
+    # True only when bus.frames proves the provider recently received a screen
+    # frame for this role. The panel switch alone is never evidence of pixels.
     live_vision_active: bool = False
-    # Host generation for this attachment request. Delivery re-checks it so
-    # turning the panel switch off can retract a cue the host already queued.
-    live_frame_permission_token: str = ""
-    # Host generation for the spoken cue itself. Delivery re-checks it so
-    # turning `[neko_wows].enabled` off can retract a callback the host
-    # already queued, instead of letting it speak for the rest of its TTL.
-    plugin_delivery_token: str = ""
     # Passive/read context is not committed before an unsolicited response.
     # Carry the standing scene in the response callback too, so a battle that
     # starts before the user's next turn still has its telemetry/vision rules.
@@ -139,14 +127,10 @@ class WowsPromptRouter:
         if scene_context:
             sections.append(scene_context)
         sections.append(bundle.instructions_for(primary.lane, profile.channel_mode))
-        # Only ever one of the two. Telling her to call the screenshot tool on a
-        # turn that already carries the shared frame would buy the same picture
-        # twice, once at the price this whole path exists to avoid. Follow the
-        # attachment request, not just the probe: a cold cache can still have
-        # the host attach a fresh frame at delivery.
+        # Only ever one of the two. A fresh provider-bus record proves those
+        # pixels were already delivered; asking for another screenshot would
+        # reacquire the same picture.
         if live_vision_wording_applies(
-            screenshot_enabled=profile.screenshot_enabled,
-            live_vision_enabled=profile.live_vision_enabled,
             live_vision_active=profile.live_vision_active,
         ):
             sections.append(LIVE_VISION_SPEAK_HINT.strip())
@@ -193,15 +177,6 @@ class WowsPromptRouter:
                 "channel_mode": profile.channel_mode,
                 "excerpt_count": excerpts_used,
                 "screenshot_enabled": bool(profile.screenshot_enabled),
-                # A request, not a prediction. The host re-checks liveness at
-                # the delivery point and attaches only if a frame is really
-                # there, so gating this on the plugin's cached view would just
-                # discard cues the host could have served -- every call-out in
-                # the seconds after sharing starts, and the first one after a
-                # cold start, when that cache is still empty.
-                "attach_live_frame": bool(profile.live_vision_enabled),
-                "live_frame_permission_token": profile.live_frame_permission_token,
-                "plugin_delivery_token": profile.plugin_delivery_token,
                 # Stamped so the timeline can attribute every call-out to the
                 # exact prompt revision that produced it.
                 "prompt_revision": bundle.revision_id,

@@ -1,7 +1,7 @@
 [plugin]
 name = "战舰世界猫娘陪玩"
-description = "World of Warships 猫娘陪玩：只读 8111_for_wows 遥测，把连续快照转成分立战局事件，按优先级仲裁后让猫娘提醒与陪伴。不做外挂、不做自动操作、不读写游戏内存。"
-short_description = "World of Warships catgirl companion: telemetry-only battle call-outs."
+description = "World of Warships 猫娘陪玩：读取 8111_for_wows 遥测，并默认复用宿主全局共享屏幕帧；该总线跨插件共享、非插件隔离。不做外挂、不做自动操作、不读写游戏内存。"
+short_description = "WoWS companion using telemetry and non-isolated cross-plugin shared-screen frames."
 keywords = ["world of warships", "wows", "战舰世界", "海战", "8111", "telemetry", "陪玩"]
 version = "0.1.0"
 id = "neko_wows"
@@ -134,10 +134,9 @@ screenshot_enabled = false
 screenshot_min_interval_seconds = 15.0
 screenshot_retain_count = 20
 
-# 复用主对话的屏幕共享画面。默认开启，且与上面的截屏开关无关：它自己不截屏、
-# 不落盘，只是把你已经在共享给猫娘的那一帧接到战报这一轮上，省掉一次工具往返
-# 和一次视觉模型调用。共享没开、画面过期、共享的是摄像头、或者对话模型不支持
-# 原生看图时，自动退回上面的截屏工具。
+# 复用模型厂商已经收到的屏幕共享画面。默认开启，且与上面的截屏开关无关：它自己
+# 不截屏、不落盘，只读有损的 bus.frames，并按目标猫娘选取 5 秒内的最新 screen 帧。
+# 没有匹配的新鲜帧时，仅在主动截屏已开启的情况下退回上面的截屏工具；否则只使用遥测。
 live_vision_enabled = true
 
 # 战术文档库。存储配额可以放很大，但排序索引单独设上限：超出后文档仍然可以

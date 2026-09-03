@@ -76,16 +76,15 @@ wows_look_at_battle 看一眼画面，再按主事件说话。你听不到语音
 方位、距离或点亮关系，也不要把舰船参考里的数据讲成当前视野。
 """
 
-# Same scene-setting again, for when the user is already sharing their screen
-# with the main conversation. The reading guide lives here rather than on each
-# call-out for a reason: with the screenshot tool it rode along as the picture's
-# `vision_prompt`, but a live frame goes to the model as raw pixels and has no
-# such slot, so it has to be said in words — and repeating two hundred tokens of
-# it on every call-out would eat the savings the live frame exists to make.
+# Same scene-setting again when the frame bus proves the provider recently
+# received a shared-screen frame for this character. The reading guide lives
+# here rather than on each call-out: provider frames have no `vision_prompt`
+# slot, and repeating two hundred tokens on every cue would waste the reuse.
 _SCENE_WITH_LIVE_VISION = """\
-现在你正在陪主人玩《战舰世界》。主人正在跟你共享屏幕，所以你能直接看到游戏画面
-——不用调任何截图工具，画面就在你眼前。你还有游戏遥测：自身舰船状态、小地图上的
-舰船位置、伤害统计和当前弹种。你听不到语音。
+现在你正在陪主人玩《战舰世界》。模型厂商最近已收到主人共享的屏幕画面，你可以结合
+最近画面判断，不用再调截图工具。帧总线有损且画面最多按 5 秒内有效；若当前上下文里
+已看不到画面，就直接按已有事实说，不要假装看到了更新。你还有游戏遥测：自身舰船状态、
+小地图上的舰船位置、伤害统计和当前弹种。你听不到语音。
 
 每次开口先说这条主事件。画面只用来确认主事件、以及补遥测读不到的东西：
 烟雾、鱼雷航迹、水花与炮口火光、自身状态图标（着火、进水、主炮/舵机损坏）。
@@ -117,13 +116,12 @@ VISION_LOOK_BEFORE_SPEAK = """\
 紧急事件同样必须先尝试看一眼，但冷却或失败时优先把要紧的话说完。
 """
 
-# The live-share counterpart. One line, because the frame is already attached
-# to this very turn and the reading guide was given once at battle start.
+# The provider-frame counterpart. The reading guide was given at battle start.
 LIVE_VISION_SPEAK_HINT = """\
-这一轮附带了主人屏幕上的实时画面。先按主事件说；画面只用来确认这件事、以及补
+模型厂商最近已收到主人共享的屏幕画面。先按主事件说；最近画面只用来确认这件事、以及补
 事实里没有的东西（烟、鱼雷航迹、着火图标）。不要把小地图解说或当前战况里的点亮
 数、距离当成这条要说的话。画面里没有的舰船、方位、点亮关系不要编。不要调截图工具。
-画面没送到就直接按已有事实说。
+当前上下文里已看不到这帧时就直接按已有事实说。
 """
 
 WOWS_RESTORE_INSTRUCTIONS = """\
@@ -245,40 +243,23 @@ def instructions_for(lane: str, channel_mode: str) -> str:
 
 def live_vision_wording_applies(
     *,
-    screenshot_enabled: bool,
-    live_vision_enabled: bool = False,
     live_vision_active: bool = False,
 ) -> bool:
-    """Whether this turn's text should treat the shared frame as already coming.
-
-    The probe cache is not the last word. When screenshots and live share are
-    both on, a cold or TTL-expired probe still sets ``attach_live_frame``, and
-    the host may attach a fresh frame at delivery. Mandating
-    ``wows_look_at_battle`` on that turn recaptures a picture she was handed.
-    Without the screenshot switch there is no such recapture, so a stale probe
-    must not pretend the picture already arrived.
-    """
-    return bool(
-        live_vision_active
-        or (live_vision_enabled and screenshot_enabled)
-    )
+    """Whether the provider recently received a matching shared-screen frame."""
+    return bool(live_vision_active)
 
 
 def context_instructions(
     *,
     screenshot_enabled: bool,
     live_vision_active: bool = False,
-    live_vision_enabled: bool = False,
 ) -> str:
     """Pick the scene-setting block that matches how she can see the battle.
 
-    Live sharing wins over the screenshot switch: when this turn is requesting
-    the shared frame, telling her to call the tool first would spend a round
-    trip to arrive at a picture she was handed anyway.
+    A fresh provider record wins over the screenshot switch: asking her to call
+    the tool would spend a round trip to reacquire pixels already delivered.
     """
     if live_vision_wording_applies(
-        screenshot_enabled=screenshot_enabled,
-        live_vision_enabled=live_vision_enabled,
         live_vision_active=live_vision_active,
     ):
         return WOWS_CONTEXT_WITH_LIVE_VISION_INSTRUCTIONS

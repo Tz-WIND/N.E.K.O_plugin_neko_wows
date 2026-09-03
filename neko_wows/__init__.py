@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-import uuid
 from typing import Any
 
 from plugin.sdk.plugin import (
@@ -122,15 +121,13 @@ from .ship_data.official_api import (
 )
 from .ship_data.resolver import ShipResolver
 from .ship_data.store import ShipCatalogStore
-from .vision.live import LiveVisionProbe
+from .vision.live import ProviderFrameProbe
 from .vision.store import ShotStore
 from .vision.tool import ScreenshotService, facts_to_telemetry
 
 CONFIG_SECTION = "neko_wows"
 KNOWLEDGE_DB_NAME = "tactical_knowledge.db"
 SCREENSHOT_DIR_NAME = "screenshots"
-_PLUGIN_DELIVERY_PERMISSION_RETRY_SECONDS = 1.0
-
 STORE_CHANNEL_MODE = "channel_mode"
 STORE_INTRUSION_SETTINGS = "intrusion_settings"
 STORE_INTRUSION_MODE = "dialogue_intrusion_mode"
@@ -236,11 +233,10 @@ class NekoWowsPlugin(NekoPluginBase):
             self.cfg.screenshot_retain_count,
             logger=self.logger,
         )
-        # Sync IPC on purpose: the probe refreshes on its own worker thread and
-        # the screenshot tool already runs under asyncio.to_thread, so neither
-        # caller has a running loop to block.
-        self.live_vision = LiveVisionProbe(
-            self._get_live_vision, logger=self.logger)
+        # Bus reads are synchronous IPC. The probe refreshes on its own worker
+        # thread so telemetry evaluation never waits for the host.
+        self.live_vision = ProviderFrameProbe(
+            self._get_provider_frames, logger=self.logger)
         self.screenshots = ScreenshotService(
             self.cfg,
             self.shots,
@@ -272,14 +268,6 @@ class NekoWowsPlugin(NekoPluginBase):
         self._service_signature: tuple[str, str] | None = None
         self._blocked_signature: tuple[tuple[str, tuple[str, ...]], ...] = ()
         self._arbiter_wait_log: set[tuple[str, str]] = set()
-        self._live_frame_permission_token = uuid.uuid4().hex
-        self._live_frame_permission_ready = False
-        self._plugin_delivery_token = uuid.uuid4().hex
-        self._plugin_delivery_permission_retry_task: asyncio.Task[None] | None = None
-        self._plugin_delivery_permission_retry_pending = False
-        # Startup runs on a transient asyncio.run() loop. The host calls
-        # _on_command_loop_start once its long-lived loop is available.
-        self._command_loop_started = False
 
     # ------------------------------------------------------------------ 配置
     def _build_registry(self) -> DetectorRegistry:
@@ -315,27 +303,6 @@ class NekoWowsPlugin(NekoPluginBase):
                     cfg.screenshot_enabled = bool(self.cfg.screenshot_enabled)
                     cfg.live_vision_enabled = bool(self.cfg.live_vision_enabled)
                 self._apply_config(cfg)
-            self._plugin_delivery_permission_retry_pending = False
-            await NekoWowsPlugin._cancel_plugin_delivery_permission_retry(self)
-            try:
-                await NekoWowsPlugin._publish_live_frame_permission(
-                    self, enabled=bool(cfg.live_vision_enabled))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Startup and TOML reload must not die because the host is
-                # briefly unreachable; call-outs with this generation fail
-                # closed until a later toggle or reload succeeds.
-                pass
-            try:
-                await NekoWowsPlugin._publish_plugin_delivery_permission(
-                    self, enabled=bool(cfg.enabled))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if cfg.enabled:
-                    self._plugin_delivery_permission_retry_pending = True
-                    NekoWowsPlugin._schedule_plugin_delivery_permission_retry(self)
             return cfg
 
     async def _apply_stored_preferences(self, cfg: WowsConfig) -> None:
@@ -406,116 +373,6 @@ class NekoWowsPlugin(NekoPluginBase):
         if isinstance(live_vision, bool):
             cfg.live_vision_enabled = live_vision
 
-    async def _publish_live_frame_permission(
-        self, *, enabled: bool, timeout: float = 3.0,
-    ) -> None:
-        self._live_frame_permission_ready = False
-        host = getattr(self, "_host_ctx", None)
-        setter = getattr(host, "set_live_frame_permission_async", None)
-        if not callable(setter):
-            return
-        token = str(getattr(self, "_live_frame_permission_token", "") or "")
-        if not token:
-            token = uuid.uuid4().hex
-            self._live_frame_permission_token = token
-        try:
-            await setter(token=token, enabled=bool(enabled), timeout=timeout)
-            self._live_frame_permission_ready = bool(enabled)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger = getattr(self, "logger", None)
-            if logger is not None:
-                logger.warning(
-                    f"live frame permission update failed: {type(exc).__name__}: {exc}"
-                )
-            raise
-
-    async def _publish_plugin_delivery_permission(
-        self, *, enabled: bool, timeout: float = 3.0,
-    ) -> None:
-        host = getattr(self, "_host_ctx", None)
-        setter = getattr(host, "set_plugin_delivery_permission_async", None)
-        if not callable(setter):
-            return
-        token = str(getattr(self, "_plugin_delivery_token", "") or "")
-        if not token:
-            token = uuid.uuid4().hex
-            self._plugin_delivery_token = token
-        try:
-            await setter(token=token, enabled=bool(enabled), timeout=timeout)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger = getattr(self, "logger", None)
-            if logger is not None:
-                logger.warning(
-                    "plugin delivery permission update failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-            raise
-
-    def _schedule_plugin_delivery_permission_retry(self) -> None:
-        if (
-            not getattr(self, "_command_loop_started", False)
-            or not getattr(
-                self, "_plugin_delivery_permission_retry_pending", False)
-            or not bool(self.cfg.enabled)
-        ):
-            return
-        task = getattr(self, "_plugin_delivery_permission_retry_task", None)
-        if task is not None and not task.done():
-            return
-        self._plugin_delivery_permission_retry_task = asyncio.create_task(
-            NekoWowsPlugin._retry_plugin_delivery_permission(self),
-            name="neko-wows-delivery-permission-retry",
-        )
-
-    async def _retry_plugin_delivery_permission(self) -> None:
-        task = asyncio.current_task()
-        try:
-            while (
-                bool(self.cfg.enabled)
-                and getattr(
-                    self, "_plugin_delivery_permission_retry_pending", False)
-            ):
-                await asyncio.sleep(_PLUGIN_DELIVERY_PERMISSION_RETRY_SECONDS)
-                if (
-                    not bool(self.cfg.enabled)
-                    or not getattr(
-                        self, "_plugin_delivery_permission_retry_pending", False)
-                ):
-                    return
-                try:
-                    await NekoWowsPlugin._publish_plugin_delivery_permission(
-                        self, enabled=True)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    continue
-                self._plugin_delivery_permission_retry_pending = False
-                return
-        finally:
-            if getattr(self, "_plugin_delivery_permission_retry_task", None) is task:
-                self._plugin_delivery_permission_retry_task = None
-
-    async def _cancel_plugin_delivery_permission_retry(self) -> None:
-        task = getattr(self, "_plugin_delivery_permission_retry_task", None)
-        self._plugin_delivery_permission_retry_task = None
-        if task is None or task is asyncio.current_task():
-            return
-        if not task.done():
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    async def _on_command_loop_start(self) -> None:
-        """Start deferred retries on the host's long-lived asyncio loop."""
-        self._command_loop_started = True
-        NekoWowsPlugin._schedule_plugin_delivery_permission_retry(self)
-
     async def _stored(self, key: str):
         try:
             return unwrap_or(await self.store.get(key), None)
@@ -571,38 +428,30 @@ class NekoWowsPlugin(NekoPluginBase):
         return facts_to_telemetry(facts)
 
     def _live_vision_active(self, *, role: str | None = None) -> bool:
-        """Whether this call-out can count on the host attaching the screen.
+        """Whether the provider recently received the target's screen frame.
 
         The panel switch is checked first so that turning it off costs nothing:
         no probe, no refresh thread, and the pipeline behaves exactly as it did
         before this feature existed.
         """
-        if (
-            not self.cfg.live_vision_enabled
-            or not getattr(self, "_live_frame_permission_ready", False)
-        ):
+        if not self.cfg.live_vision_enabled:
             return False
         target = resolve_target_lanlan(self) if role is None else str(role or "")
         return self.live_vision.is_active(role=target)
 
-    def _get_live_vision(self, **kwargs: Any) -> dict[str, Any]:
-        kwargs["permission_token"] = str(
-            getattr(self, "_live_frame_permission_token", "") or "")
-        return self._host_ctx.get_live_vision_sync(**kwargs)
+    def _get_provider_frames(self) -> list[Any]:
+        """Read recent screen records from the SDK's read-only frame bus."""
+        return list(self.bus.frames.get(
+            max_count=8,
+            filter={"source": "screen"},
+            timeout=1.0,
+        ))
 
     def _live_frame(self) -> bytes | None:
-        """The shared frame for the screenshot tool, when one is available.
-
-        Accepts a share the model cannot read natively, unlike
-        ``_live_vision_active``: this frame goes back through the tool's own
-        image channel, which the host transcribes for such models anyway, so
-        the only thing gained or lost here is who grabbed the pixels.
-        """
+        """Reuse the latest fresh provider frame for the screenshot tool."""
         if not self.cfg.live_vision_enabled:
             return None
         role = resolve_target_lanlan(self)
-        if not self.live_vision.is_sharing_screen(role=role):
-            return None
         return self.live_vision.fetch_frame(role=role)
 
     def _on_screenshot_result(self, action: str, output: dict[str, Any]) -> None:
@@ -716,37 +565,8 @@ class NekoWowsPlugin(NekoPluginBase):
     async def shutdown(self, **_):
         with self._state_lock:
             self._running = False
-        self._plugin_delivery_permission_retry_pending = False
-        await self._cancel_plugin_delivery_permission_retry()
-
-        permission_error: Exception | None = None
-        failed_permission = "live frame"
-        try:
-            await self._publish_live_frame_permission(enabled=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            permission_error = exc
-        try:
-            await self._publish_plugin_delivery_permission(enabled=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            if permission_error is None:
-                permission_error = exc
-                failed_permission = "plugin delivery"
-        self._live_frame_permission_token = uuid.uuid4().hex
-        self._live_frame_permission_ready = False
-        self._plugin_delivery_token = uuid.uuid4().hex
-
         status = await asyncio.to_thread(self._shutdown_resources)
         self.logger.info("neko_wows shutdown")
-        if permission_error is not None:
-            return Err(SdkError(
-                f"{failed_permission} permission revocation failed during "
-                f"shutdown: {type(permission_error).__name__}: "
-                f"{permission_error}"
-            ))
         return Ok({"status": "shutdown", "service": status.as_dict()})
 
     def _shutdown_resources(self):
@@ -775,15 +595,7 @@ class NekoWowsPlugin(NekoPluginBase):
         cfg = await self._reload_config()
         after = self._connection_signature()
         if not cfg.enabled:
-            try:
-                await self._stop_runtime_output()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                return Err(SdkError(
-                    "plugin delivery permission revocation failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ))
+            await self._stop_runtime_output()
             return Ok({
                 "status": "disabled",
                 "dry_run": cfg.dry_run,
@@ -816,24 +628,6 @@ class NekoWowsPlugin(NekoPluginBase):
             self._running = False
             self._latest = None
             self._previous = None
-        self._plugin_delivery_permission_retry_pending = False
-        await self._cancel_plugin_delivery_permission_retry()
-        delivery_error: Exception | None = None
-        try:
-            await self._publish_plugin_delivery_permission(enabled=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            delivery_error = exc
-        try:
-            await self._publish_live_frame_permission(enabled=False)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        self._plugin_delivery_token = uuid.uuid4().hex
-        self._live_frame_permission_token = uuid.uuid4().hex
-        self._live_frame_permission_ready = False
         await asyncio.to_thread(self.transport.stop)
         await asyncio.to_thread(self.service.stop)
         with self._pipeline_lock:
@@ -844,8 +638,6 @@ class NekoWowsPlugin(NekoPluginBase):
             self.ship_context.reset("disabled")
             self.timeline.record(
                 STAGE_DELIVERY, "disabled", reason="config")
-        if delivery_error is not None:
-            raise delivery_error
 
     def _resume_runtime_output(self) -> None:
         """Undo the pause from `_stop_runtime_output` before reconnecting."""
@@ -963,14 +755,9 @@ class NekoWowsPlugin(NekoPluginBase):
         facts = self.facts.build(snapshot)
         current = (snapshot, facts)
         target_lanlan = resolve_target_lanlan(self)
-        live_vision_enabled = bool(
-            cfg.live_vision_enabled
-            and getattr(self, "_live_frame_permission_ready", False)
-        )
         live_vision_active = self._live_vision_active(role=target_lanlan)
         scene_context = context_instructions(
             screenshot_enabled=bool(cfg.screenshot_enabled),
-            live_vision_enabled=live_vision_enabled,
             live_vision_active=live_vision_active,
         )
 
@@ -1091,12 +878,7 @@ class NekoWowsPlugin(NekoPluginBase):
             dry_run=cfg.dry_run,
             bundle=bundle,
             screenshot_enabled=bool(cfg.screenshot_enabled),
-            live_vision_enabled=live_vision_enabled,
             live_vision_active=live_vision_active,
-            live_frame_permission_token=str(
-                getattr(self, "_live_frame_permission_token", "") or ""),
-            plugin_delivery_token=str(
-                getattr(self, "_plugin_delivery_token", "") or ""),
             target_lanlan=target_lanlan,
             scene_context=scene_context,
         )
@@ -1300,13 +1082,12 @@ class NekoWowsPlugin(NekoPluginBase):
         if not cfg.live_vision_enabled:
             return {"enabled": False, "active": False, "usable": False,
                     "in_use": False, "polled": False, "source": "",
-                    "age_seconds": None, "native_vision": False, "role": ""}
+                    "age_seconds": None, "role": "", "frame_id": "",
+                    "generation": None, "provider_delivered": False}
         payload = dict(self.live_vision.status(
             role=resolve_target_lanlan(self)))
         payload["enabled"] = True
-        # What the pipeline would actually do right now, so the panel can say
-        # "sharing, but she still needs the screenshot tool" rather than making
-        # the user infer it from three separate flags.
+        # What the pipeline would actually do right now.
         payload["in_use"] = bool(payload.get("usable"))
         return payload
 
@@ -1682,7 +1463,7 @@ class NekoWowsPlugin(NekoPluginBase):
                 self.screenshots.apply_config(self.cfg)
             if not enabled:
                 # Wait outside the host event loop for any capture/recall that
-                # already passed its permission check, then delete every frame.
+                # already started, then delete every retained frame.
                 removed = await asyncio.to_thread(self.screenshots.clear)
             else:
                 removed = 0
@@ -1697,8 +1478,9 @@ class NekoWowsPlugin(NekoPluginBase):
         id="set_live_vision_enabled",
         name="开关共享画面复用",
         description=(
-            "主对话开着屏幕共享时，把那一帧直接接到战报上，省掉一次截图工具"
-            "往返。它自己不截屏也不落盘，默认开启；关掉就只走上面的主动截屏。"
+            "读取模型厂商已经收到的共享屏幕帧，并按目标猫娘复用 5 秒内的最新画面。"
+            "它自己不截屏也不落盘，默认开启；没有可用帧或关掉时，仅在主动截屏"
+            "已开启的情况下使用截图工具，否则只使用遥测。"
         ),
         input_schema={
             "type": "object",
@@ -1708,40 +1490,11 @@ class NekoWowsPlugin(NekoPluginBase):
     async def set_live_vision_enabled(self, value: bool = True, **_):
         enabled = bool(value)
         async with self._preference_lock:
-            previous_enabled = bool(self.cfg.live_vision_enabled)
-            previous_token = str(
-                getattr(self, "_live_frame_permission_token", "") or "")
             error = await self._persist(STORE_LIVE_VISION_ENABLED, enabled)
             if error is not None:
                 return Err(error)
             with self._pipeline_lock:
                 self.cfg.live_vision_enabled = enabled
-            try:
-                await self._publish_live_frame_permission(enabled=enabled)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                with self._pipeline_lock:
-                    self.cfg.live_vision_enabled = previous_enabled
-                    self._live_frame_permission_token = previous_token
-                rollback_error = await self._persist(
-                    STORE_LIVE_VISION_ENABLED, previous_enabled)
-                rollback_detail = ""
-                if rollback_error is not None:
-                    rollback_detail = (
-                        f"; preference rollback failed: {rollback_error}"
-                    )
-                    self.logger.warning(
-                        "live vision preference rollback failed: "
-                        f"{rollback_error}"
-                    )
-                return Err(SdkError(
-                    f"live frame permission update failed: "
-                    f"{type(exc).__name__}: {exc}{rollback_detail}"
-                ))
-            if not enabled:
-                with self._pipeline_lock:
-                    self._live_frame_permission_token = uuid.uuid4().hex
             return Ok({"live_vision_enabled": enabled})
 
     @ui.action(id="set_screenshot_settings", label="截屏参数", tone="primary",
@@ -1998,10 +1751,6 @@ class NekoWowsPlugin(NekoPluginBase):
         # Straight to the router: the dispatcher is never involved, so a preview
         # cannot become a message no matter what the output settings are.
         screenshot_enabled = bool(self.cfg.screenshot_enabled)
-        live_vision_enabled = bool(
-            self.cfg.live_vision_enabled
-            and getattr(self, "_live_frame_permission_ready", False)
-        )
         live_vision_active = self._live_vision_active()
         request = self.router.build(
             candidate,
@@ -2010,11 +1759,9 @@ class NekoWowsPlugin(NekoPluginBase):
                 dry_run=True,
                 bundle=bundle,
                 screenshot_enabled=screenshot_enabled,
-                live_vision_enabled=live_vision_enabled,
                 live_vision_active=live_vision_active,
                 scene_context=context_instructions(
                     screenshot_enabled=screenshot_enabled,
-                    live_vision_enabled=live_vision_enabled,
                     live_vision_active=live_vision_active,
                 ),
             ),

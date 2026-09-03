@@ -141,17 +141,18 @@ export type ScreenshotState = {
 export type LiveVisionState = {
   /** Panel switch. */
   enabled?: boolean
-  /** Frames are arriving from the main conversation right now. */
+  /** A fresh matching screen record exists in bus.frames. */
   active?: boolean
-  /** "screen" or "camera"; only a screen share is useful here. */
+  /** Only "screen" records are queried. */
   source?: string
   age_seconds?: number | null
-  /** The conversation model reads pixels without a vision-model detour. */
-  native_vision?: boolean
   role?: string
-  /** The host has been asked at least once. */
+  frame_id?: string
+  generation?: number | null
+  provider_delivered?: boolean
+  /** The frame bus has been queried at least once. */
   polled?: boolean
-  /** All host-side conditions met, switch aside. */
+  /** A fresh provider-delivered frame matches the target role. */
   usable?: boolean
   /** usable AND switched on: what the pipeline will actually do. */
   in_use?: boolean

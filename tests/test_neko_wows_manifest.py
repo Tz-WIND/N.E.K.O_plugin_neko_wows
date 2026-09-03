@@ -52,6 +52,29 @@ def test_manual_start_and_store_enabled(manifest):
     assert manifest["plugin"]["store"]["enabled"] is True
 
 
+def test_public_descriptions_disclose_shared_screen_frame_access(manifest):
+    catalogs = {
+        name: json.loads((PLUGIN_DIR / "i18n" / name).read_text(encoding="utf-8"))
+        for name in ("zh-CN.json", "zh-TW.json", "en.json")
+    }
+    plugin = manifest["plugin"]
+
+    assert "telemetry-only" not in plugin["short_description"].lower()
+    assert "shared-screen" in plugin["short_description"].lower()
+    assert "non-isolated" in plugin["short_description"].lower()
+    assert "共享屏幕" in plugin["description"]
+    assert "非插件隔离" in plugin["description"]
+    assert "shared-screen" in catalogs["en.json"]["description"].lower()
+    assert "not plugin-isolated" in catalogs["en.json"]["description"].lower()
+    assert "共享屏幕" in catalogs["zh-CN.json"]["description"]
+    assert "非插件隔离" in catalogs["zh-CN.json"]["description"]
+    assert "共享螢幕" in catalogs["zh-TW.json"]["description"]
+    assert "非外掛隔離" in catalogs["zh-TW.json"]["description"]
+    assert "shared-screen" in catalogs["en.json"]["panel.subtitle"].lower()
+    assert "共享屏幕" in catalogs["zh-CN.json"]["panel.subtitle"]
+    assert "共享螢幕" in catalogs["zh-TW.json"]["panel.subtitle"]
+
+
 # --- hosted UI -----------------------------------------------------------
 
 def test_the_panel_surface_is_declared_and_present(manifest):
