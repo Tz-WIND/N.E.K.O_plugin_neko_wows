@@ -16,5 +16,5 @@ jobs:
     uses: Project-N-E-K-O/N.E.K.O/.github/workflows/plugin-market-release.yml@main
     with:
       plugin-id: neko_wows
-      neko-repository: Tz-WIND/N.E.K.O
-      neko-ref: feat/plugin-host-capabilities
+      neko-repository: Project-N-E-K-O/N.E.K.O
+      neko-ref: main
