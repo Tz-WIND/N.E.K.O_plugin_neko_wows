@@ -12,7 +12,6 @@ from collections import Counter, defaultdict, deque
 from pathlib import Path
 
 import pytest
-
 from neko_wows import NekoWowsPlugin
 from neko_wows.adapters.neko_dispatcher import (
     REASON_DELIVERED,

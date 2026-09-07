@@ -6,7 +6,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from neko_wows.domain.contracts import (
     NullTacticsRepository,
     TacticQuery,

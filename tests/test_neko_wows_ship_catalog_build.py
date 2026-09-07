@@ -11,7 +11,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
 from neko_wows.ship_data import source_wowsinfo
 from neko_wows.ship_data.source_wowsinfo import (
     SourceValidationError,

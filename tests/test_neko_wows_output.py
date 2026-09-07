@@ -8,7 +8,6 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from neko_wows import NekoWowsPlugin
 from neko_wows.adapters.neko_dispatcher import (
     REASON_DELIVERED,

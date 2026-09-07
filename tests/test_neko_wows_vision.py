@@ -17,7 +17,6 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-
 from neko_wows.domain.contracts import WowsConfig
 from neko_wows.vision import capture as capture_module
 from neko_wows.vision import store as store_module
@@ -1008,9 +1007,8 @@ def test_disabled_plugin_screenshot_telemetry_is_out_of_battle():
 
 
 def _declared_tools():
-    from plugin.sdk.plugin.llm_tool import collect_llm_tool_methods
-
     from neko_wows import NekoWowsPlugin
+    from plugin.sdk.plugin.llm_tool import collect_llm_tool_methods
 
     plugin = object.__new__(NekoWowsPlugin)
     return {meta.name: meta for meta, _method in collect_llm_tool_methods(plugin)}

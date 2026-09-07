@@ -6,7 +6,6 @@ import math
 from dataclasses import replace
 
 import pytest
-
 from neko_wows.detectors._base import DetectorRegistry
 from neko_wows.detectors.damage import build_damage_detectors
 from neko_wows.detectors.geometry import build_geometry_detectors

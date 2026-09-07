@@ -6,8 +6,6 @@ import asyncio
 import threading
 
 import pytest
-from plugin.sdk.plugin import Err, Ok, SdkError
-
 from neko_wows import (
     STORE_CONNECTION_SETTINGS,
     STORE_LIVE_VISION_ENABLED,
@@ -47,6 +45,7 @@ from neko_wows.policy.tactic_policy import (
     AdviceCandidate,
     WowsTacticPolicy,
 )
+from plugin.sdk.plugin import Err, Ok, SdkError
 
 
 def facts(at=100.0):
