@@ -6,6 +6,7 @@ import asyncio
 import threading
 
 import pytest
+
 from neko_wows.adapters import transport as transport_module
 from neko_wows.adapters.schema_adapter import (
     BW_TO_METERS,

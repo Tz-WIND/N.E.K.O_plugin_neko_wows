@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+
 from neko_wows.adapters.schema_adapter import WowsSchemaAdapter
 from neko_wows.detectors._base import DetectorRegistry
 from neko_wows.detectors.damage import (

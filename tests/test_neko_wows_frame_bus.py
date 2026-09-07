@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
 from neko_wows.domain.contracts import LANE_NORMAL, WowsConfig
 from neko_wows.policy.tactic_policy import AdviceCandidate
 from neko_wows.presentation.instructions import (

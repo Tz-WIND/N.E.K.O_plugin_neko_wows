@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+
 from neko_wows.domain.contracts import WowsConfig
 from neko_wows.domain.snapshot import (
     RELATION_ALLY,

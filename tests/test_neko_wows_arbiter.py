@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from neko_wows.domain.catalog import (
     BATTLE_ENDED,
     BATTLE_STARTED,

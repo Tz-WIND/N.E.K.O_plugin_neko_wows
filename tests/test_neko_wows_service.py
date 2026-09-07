@@ -9,6 +9,7 @@ import threading
 import urllib.error
 
 import pytest
+
 from neko_wows import NekoWowsPlugin, _mod_hint
 from neko_wows.adapters import service_manager as sm
 from neko_wows.adapters.service_manager import (
@@ -27,7 +28,6 @@ from neko_wows.adapters.service_manager import (
     probe_health,
 )
 from neko_wows.domain.contracts import WowsConfig
-
 from tests.fake_clock import patch_module_clock
 
 

@@ -6,6 +6,7 @@ import base64
 import math
 
 import pytest
+
 from neko_wows.domain.contracts import WowsConfig
 from neko_wows.vision import tool as tool_module
 from neko_wows.vision.live import ProviderFrameProbe

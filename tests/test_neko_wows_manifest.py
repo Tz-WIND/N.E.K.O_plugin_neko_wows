@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+
 from neko_wows.domain.contracts import (
     ALL_CHANNEL_MODES,
     LANE_NORMAL,
@@ -34,8 +35,9 @@ def test_identity_is_consistent_with_the_folder(manifest):
 
 
 def test_the_declared_entry_class_exists_and_is_a_plugin():
-    from neko_wows import NekoWowsPlugin
     from plugin.sdk.plugin import NEKO_PLUGIN_TAG, NekoPluginBase
+
+    from neko_wows import NekoWowsPlugin
 
     assert issubclass(NekoWowsPlugin, NekoPluginBase)
     # The @neko_plugin tag is what the host loader looks for.

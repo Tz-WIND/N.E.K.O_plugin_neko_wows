@@ -12,6 +12,8 @@ from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from plugin.sdk.plugin.llm_tool import collect_llm_tool_methods
+
 from neko_wows import NekoWowsPlugin
 from neko_wows.domain.contracts import WowsConfig
 from neko_wows.ship_data.models import (
@@ -20,7 +22,6 @@ from neko_wows.ship_data.models import (
     ShipProfile,
 )
 from neko_wows.ship_data.official_api import OfficialWowsApiClient
-from plugin.sdk.plugin.llm_tool import collect_llm_tool_methods
 
 SHIP_ID = 4276041424
 
