@@ -3,7 +3,7 @@ name = "战舰世界猫娘陪玩"
 description = "World of Warships 猫娘陪玩：读取 8111_for_wows 遥测，并默认复用宿主全局共享屏幕帧；该总线跨插件共享、非插件隔离。不做外挂、不做自动操作、不读写游戏内存。"
 short_description = "WoWS companion using telemetry and non-isolated cross-plugin shared-screen frames."
 keywords = ["world of warships", "wows", "战舰世界", "海战", "8111", "telemetry", "陪玩"]
-version = "0.1.0"
+version = "0.1.1"
 id = "neko_wows"
 entry = "plugin.plugins.neko_wows.neko_wows:NekoWowsPlugin"
 # 本插件的入口全部是面板动作，不需要参与 Agent 的插件选择；主动播报走
